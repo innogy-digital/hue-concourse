@@ -1,54 +1,106 @@
-const puppeteer = require('puppeteer');
-var schedule = require('node-schedule');
+const puppeteer = require('puppeteer-core');
+const schedule = require('node-schedule');
 
 
-const URL = "http://ci.lab.innogize.io/hd";
-const USERNAME = "viewer";
-const PASSWORD = "XXXX";
+const PROJECT_DASHBOARD_URL = 'https://dlab-project-dashboard.cfapps.mila.external.ap.innogy.com/';
+const CONCOURSE_URL = "http://ci.lab.innogize.io/hd";
 
-class ConcourseAutologin {
-    async open() {
-        this.browser = await puppeteer.launch({
-            headless: false,
-            args: ['--kiosk', '--disable-infobars']
 
-        });
-        this.page = await this.browser.newPage();
-        await this.page.setViewport({width: 1920, height: 1080});
-        await this.page.goto(URL);
+async function concourseLoginCallback(page) {
+    const username = process.env.CONCOURSE_USERNAME;
+    const password = process.env.CONCOURSE_PASSWORD;
+
+    if (!username || !password) {
+        console.error('ERROR - Can\'t Login! ' +
+            'Please set environment variables "CONCOURSE_USERNAME" and "CONCOURSE_PASSWORD"!');
+        return;
     }
 
-    async login() {
-        await this.page.goto(URL);
-        try {
-            const loginButton = await this.page.waitForSelector("#login-item", {timeout: 1000});
-            console.log("Try to login...");
+    try {
+        await page.reload();
 
-            await loginButton.click();
+        const loginButton = await page.waitForSelector("#login-item", {timeout: 2000});
+        console.log("Try to login...");
 
-            const loginLocalButton = await this.page.waitForSelector("button.dex-btn .dex-btn-icon--local", {timeout: 1000});
-            await loginLocalButton.click();
+        await loginButton.click();
 
-            const loginInput = await this.page.waitForSelector("input#login", {timeout: 1000});
-            const passwordInput = await this.page.waitForSelector("input#password", {timeout: 1000});
-            const buttonLogin = await this.page.waitForSelector("button#submit-login", {timeout: 1000});
+        const loginLocalButton = await page.waitForSelector("button.dex-btn .dex-btn-icon--local", {timeout: 2000});
+        await loginLocalButton.click();
 
-            await loginInput.type(USERNAME, {delay: 100});
-            await passwordInput.type(PASSWORD, {delay: 100});
-            await buttonLogin.click();
-        } catch (e) {
-            console.log("No need to login...");
+        const loginInput = await page.waitForSelector("input#login", {timeout: 2000});
+        const passwordInput = await page.waitForSelector("input#password", {timeout: 2000});
+        const buttonLogin = await page.waitForSelector("button#submit-login", {timeout: 2000});
+
+        await loginInput.type(username, {delay: 100});
+        await passwordInput.type(password, {delay: 100});
+        await buttonLogin.click();
+    } catch (e) {
+        console.log("No need to login...");
+    }
+}
+
+async function dashboardCallback(page) {
+    await page.reload();
+}
+
+
+class ConcourseAutologin {
+    constructor() {
+        this.pages = [];
+        this.activePage;
+    }
+
+    async launch() {
+        this.browser = await puppeteer.launch({
+            headless: false,
+            args: [
+                '--kiosk',
+                '--disable-infobars',
+                '--no-sandbox'
+            ],
+            executablePath: 'chromium-browser'
+        });
+    }
+
+    async addPage(url, loginCallback) {
+        const page = await this.browser.newPage();
+        await page.setViewport({width: 1920, height: 1080});
+        await page.goto(url);
+
+        if (loginCallback) {
+            await loginCallback(page);
+        }
+
+        this.pages.push({
+            page: page,
+            url: url,
+            callback: loginCallback
+        });
+        this.activePage = page;
+    }
+
+    async nextPage() {
+        let i = this.pages.indexOf(this.activePage) + 1;
+        if (i >= this.pages.length) {
+            i = 0;
+        }
+
+        this.activePage = this.pages[i];
+        await this.activePage.page.bringToFront();
+        if (this.activePage.callback) {
+            await this.activePage.callback(this.activePage.page);
         }
     }
 }
 
 (async () => {
+    const autologin = await new ConcourseAutologin();
+    await autologin.launch();
 
-    const autologin = new ConcourseAutologin();
-    await autologin.open();
-    await autologin.login();
+    await autologin.addPage(CONCOURSE_URL, concourseLoginCallback);
+    await autologin.addPage(PROJECT_DASHBOARD_URL, dashboardCallback);
 
-    schedule.scheduleJob({minutes: 42}, async () => {
-        await autologin.login();
+    schedule.scheduleJob({rule: '0 */1 * * * *'}, async () => {
+        await autologin.nextPage();
     });
 })();
